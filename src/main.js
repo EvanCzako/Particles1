@@ -2,7 +2,8 @@ import computeSrc from './compute.wgsl?raw';
 import renderSrc  from './render.wgsl?raw';
 
 // ── Simulation parameters ────────────────────────────────────────────────────
-const NUM_PARTICLES    = 5000;
+const MAX_PARTICLES    = 10000;  // buffer always allocated for this many
+const DEFAULT_PARTICLES = 5000;
 const RMIN             = 20;
 const RMAX             = 300;
 const REP_STRENGTH     = 3.0;
@@ -21,9 +22,15 @@ const TYPE_COLORS = [
     '#ff99cc', // 7 pink
 ];
 
-const MAX_TYPES      = 8;    // hard maximum; force matrix buffer uses this as stride
-const WORLD_SCALE    = 2;    // simulation world is this many times the canvas size
-const PARTICLE_RADIUS = 3.5; // base visual radius in world units (scaled by WORLD_SCALE)
+const MAX_TYPES       = 8;    // hard maximum; force matrix buffer uses this as stride
+const PARTICLE_RADIUS = 3.5;  // base visual radius in world units (scaled by worldScale())
+
+// World scale: keeps the longest screen dimension equivalent to ~3840 world units
+// (2× a 1920px reference). On smaller screens (mobile) the scale grows, so the
+// simulation world never becomes disproportionately tiny.
+function worldScale() {
+    return Math.max(2, 3840 / Math.max(window.innerWidth, window.innerHeight));
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 const STEP_DT             = 1 / 60;
@@ -37,20 +44,20 @@ const FLOATS_PER_PARTICLE = 6;
 //   0: width  4: height  8: numParticles  12: numTypes
 //  16: rMin  20: rMax   24: repStrength  28: attractStrength
 //  32: friction  36: particleRadius  40–44: padding
-// width/height are the WORLD dimensions (canvas * WORLD_SCALE), not the pixel dims.
-function writeUniforms(device, buf, width, height, numTypes) {
+// width/height are the WORLD dimensions (canvas * worldScale()), not the pixel dims.
+function writeUniforms(device, buf, width, height, numTypes, numParticles) {
     const ab = new ArrayBuffer(48);
     const dv = new DataView(ab);
-    dv.setFloat32( 0, width  * WORLD_SCALE,          true);
-    dv.setFloat32( 4, height * WORLD_SCALE,          true);
-    dv.setUint32 ( 8, NUM_PARTICLES,                 true);
+    dv.setFloat32( 0, width  * worldScale(),          true);
+    dv.setFloat32( 4, height * worldScale(),          true);
+    dv.setUint32 ( 8, numParticles,                  true);
     dv.setUint32 (12, numTypes,                      true);
     dv.setFloat32(16, RMIN,                          true);
     dv.setFloat32(20, RMAX,                          true);
     dv.setFloat32(24, REP_STRENGTH,                  true);
     dv.setFloat32(28, ATTRACT_STRENGTH,              true);
     dv.setFloat32(32, FRICTION,                      true);
-    dv.setFloat32(36, PARTICLE_RADIUS * WORLD_SCALE, true);
+    dv.setFloat32(36, PARTICLE_RADIUS * worldScale(), true);
     // bytes 40–47: padding (ArrayBuffer is zero-initialized)
     device.queue.writeBuffer(buf, 0, ab);
 }
@@ -185,14 +192,15 @@ async function main() {
     // Always MAX_TYPES × MAX_TYPES (8×8 = 64 floats). The shader reads with
     // fixed stride MAX_TYPES, so this buffer never needs to be resized.
     // forceMatrix[i * MAX_TYPES + j] = force type-i feels toward type-j.
-    let numTypes    = 2;
+    let numTypes     = 2;
+    let numParticles = DEFAULT_PARTICLES;
     const forceMatrix = new Float32Array(MAX_TYPES * MAX_TYPES);
     for (let i = 0; i < numTypes; i++)
         for (let j = 0; j < numTypes; j++)
             forceMatrix[i * MAX_TYPES + j] = Math.random() * 2 - 1;
 
     // ── GPU buffers ───────────────────────────────────────────────────────────
-    const bufSize = NUM_PARTICLES * FLOATS_PER_PARTICLE * 4;
+    const bufSize = MAX_PARTICLES * FLOATS_PER_PARTICLE * 4;
     const bufA = device.createBuffer({ size: bufSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const bufB = device.createBuffer({ size: bufSize, usage: GPUBufferUsage.STORAGE });
 
@@ -258,11 +266,11 @@ async function main() {
     let accumulator = 0;
 
     function initParticles() {
-        const data = new Float32Array(NUM_PARTICLES * FLOATS_PER_PARTICLE);
-        for (let i = 0; i < NUM_PARTICLES; i++) {
+        const data = new Float32Array(numParticles * FLOATS_PER_PARTICLE);
+        for (let i = 0; i < numParticles; i++) {
             const b = i * FLOATS_PER_PARTICLE;
-            data[b + 0] = Math.random() * canvas.width  * WORLD_SCALE;
-            data[b + 1] = Math.random() * canvas.height * WORLD_SCALE;
+            data[b + 0] = Math.random() * canvas.width  * worldScale();
+            data[b + 1] = Math.random() * canvas.height * worldScale();
             data[b + 4] = Math.floor(Math.random() * numTypes);
         }
         device.queue.writeBuffer(bufA, 0, data);
@@ -290,7 +298,7 @@ async function main() {
 
         numTypes = newNumTypes;
         device.queue.writeBuffer(fmBuf, 0, forceMatrix);
-        writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes);
+        writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes, numParticles);
 
         initParticles();
 
@@ -313,6 +321,12 @@ async function main() {
         if (numTypes < MAX_TYPES) applyNumTypes(numTypes + 1);
     });
 
+    document.getElementById('zero-btn').addEventListener('click', () => {
+        forceMatrix.fill(0);
+        device.queue.writeBuffer(fmBuf, 0, forceMatrix);
+        matrixUI.refresh();
+    });
+
     document.getElementById('randomize-btn').addEventListener('click', () => {
         for (let i = 0; i < numTypes; i++)
             for (let j = 0; j < numTypes; j++)
@@ -323,7 +337,7 @@ async function main() {
 
     // ── First frame: write initial GPU state ──────────────────────────────────
     initParticles();
-    writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes);
+    writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes, numParticles);
     device.queue.writeBuffer(fmBuf, 0, forceMatrix);
 
     // ── Time control ──────────────────────────────────────────────────────────
@@ -335,6 +349,15 @@ async function main() {
     slider.addEventListener('input', () => {
         timeMultiplier = parseFloat(slider.value);
         label.textContent = timeMultiplier === 0 ? 'Paused' : timeMultiplier.toFixed(2) + '×';
+    });
+
+    const countSlider = document.getElementById('count-slider');
+    const countLabel  = document.getElementById('count-label');
+    countSlider.addEventListener('input', () => {
+        numParticles = parseInt(countSlider.value, 10);
+        countLabel.textContent = numParticles.toLocaleString();
+        initParticles();
+        writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes, numParticles);
     });
 
     // ── Render loop ───────────────────────────────────────────────────────────
@@ -353,7 +376,7 @@ async function main() {
             const cp = encoder.beginComputePass();
             cp.setPipeline(computePipeline);
             cp.setBindGroup(0, computeBG[f]);
-            cp.dispatchWorkgroups(Math.ceil(NUM_PARTICLES / 64));
+            cp.dispatchWorkgroups(Math.ceil(numParticles / 64));
             cp.end();
             accumulator -= STEP_DT;
             physicsStep++;
@@ -370,7 +393,7 @@ async function main() {
         });
         rp.setPipeline(renderPipeline);
         rp.setBindGroup(0, renderBG[physicsStep & 1]);
-        rp.draw(NUM_PARTICLES * 6);
+        rp.draw(numParticles * 6);
         rp.end();
 
         device.queue.submit([encoder.finish()]);
@@ -380,7 +403,7 @@ async function main() {
     window.addEventListener('resize', () => {
         canvas.width  = window.innerWidth;
         canvas.height = window.innerHeight;
-        writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes);
+        writeUniforms(device, uniformBuf, canvas.width, canvas.height, numTypes, numParticles);
     });
 
     requestAnimationFrame(tick);
