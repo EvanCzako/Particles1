@@ -30,7 +30,7 @@ struct VertexOut {
     @location(1)       uv:    vec2<f32>,
 }
 
-// 8 distinct colors — must match TYPE_COLORS in main.js.
+// 8 distinct colors — must match TYPE_COLORS in App.jsx.
 fn typeColor(t: u32) -> vec3<f32> {
     switch (t % 8u) {
         case 0u: { return vec3<f32>(1.00, 0.22, 0.22); } // red

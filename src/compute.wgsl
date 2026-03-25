@@ -8,18 +8,18 @@ struct Particle {
     _pad:  f32,
 }
 
-// Must match writeUniforms() layout in main.js exactly (48 bytes, 16-byte aligned).
+// Must match writeUniforms() in App.jsx exactly (48 bytes, 16-byte aligned).
 struct Uniforms {
     width:           f32,  //  0
     height:          f32,  //  4
     numParticles:    u32,  //  8
-    numTypes:        u32,  // 12 — active type count (1–8); shader wraps particle types to this range
+    numTypes:        u32,  // 12 — active type count (1–8); wraps particle types to this range
     rMin:            f32,  // 16
     rMax:            f32,  // 20
     repStrength:     f32,  // 24
     attractStrength: f32,  // 28
     friction:        f32,  // 32
-    _pad0:           f32,  // 36
+    particleRadius:  f32,  // 36 — unused by compute; present to match render.wgsl layout
     _pad1:           f32,  // 40
     _pad2:           f32,  // 44
 }
